@@ -18,6 +18,7 @@ package retrofit;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import com.badlogic.gdx.Gdx;
 import java.lang.invoke.MethodHandles;
 import java.lang.reflect.Method;
 import java.util.concurrent.Executor;
@@ -32,6 +33,11 @@ class Platform {
   }
 
   private static Platform findPlatform() {
+    try {
+      Class.forName("com.badlogic.gdx.Gdx");
+      return new LibGDX();
+    } catch (ClassNotFoundException ignored) {
+    }
     try {
       Class.forName("android.os.Build");
       if (Build.VERSION.SDK_INT != 0) {
@@ -100,7 +106,7 @@ class Platform {
       }
     }
   }
-  
+
   static class IOS extends Platform {
     @Override CallAdapter.Factory defaultCallAdapterFactory(Executor callbackExecutor) {
       if (callbackExecutor == null) {
@@ -114,6 +120,21 @@ class Platform {
 
       @Override public void execute(Runnable r) {
         queue.addOperation(r);
+      }
+    }
+  }
+
+  static class LibGDX extends Platform {
+    @Override CallAdapter.Factory defaultCallAdapterFactory(Executor callbackExecutor) {
+      if (callbackExecutor == null) {
+        callbackExecutor = new MainThreadExecutor();
+      }
+      return new ExecutorCallAdapterFactory(callbackExecutor);
+    }
+
+    static class MainThreadExecutor implements Executor {
+      @Override public void execute(Runnable r) {
+        Gdx.app.postRunnable(r);
       }
     }
   }
