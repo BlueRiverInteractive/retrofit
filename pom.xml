@@ -105,16 +105,6 @@
         <version>${android.version}</version>
       </dependency>
       <dependency>
-        <groupId>org.robovm</groupId>
-        <artifactId>robovm-rt</artifactId>
-        <version>${robovm.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.robovm</groupId>
-        <artifactId>robovm-cocoatouch</artifactId>
-        <version>${robovm.version}</version>
-      </dependency>
-      <dependency>
         <groupId>com.badlogicgames.gdx</groupId>
         <artifactId>gdx</artifactId>
         <version>${libgdx.version}</version>
