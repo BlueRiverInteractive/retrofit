@@ -105,11 +105,6 @@
         <version>${android.version}</version>
       </dependency>
       <dependency>
-        <groupId>com.badlogicgames.gdx</groupId>
-        <artifactId>gdx</artifactId>
-        <version>${libgdx.version}</version>
-      </dependency>
-      <dependency>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>animal-sniffer-annotations</artifactId>
         <version>${animal.sniffer.version}</version>

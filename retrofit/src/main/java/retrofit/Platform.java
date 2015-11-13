@@ -18,7 +18,6 @@ package retrofit;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
-import com.badlogic.gdx.Gdx;
 import java.lang.invoke.MethodHandles;
 import java.lang.reflect.Method;
 import java.util.concurrent.Executor;
@@ -148,8 +147,25 @@ class Platform {
     }
 
     static class MainThreadExecutor implements Executor {
+      private static Object gdxApp;
+      private static Method postRunnable;
+
+      static {
+        try {
+          Class<?> gdx = Class.forName("com.badlogic.gdx.Gdx");
+          gdxApp = gdx.getDeclaredField("app").get(null);
+          postRunnable = gdxApp.getClass().getDeclaredMethod("postRunnable", Runnable.class);
+        } catch (Exception e) {
+          e.printStackTrace();
+        }
+      }
+
       @Override public void execute(Runnable r) {
-        Gdx.app.postRunnable(r);
+        try {
+          // Gdx.app.postRunnable(r);
+          postRunnable.invoke(gdxApp, r);
+        } catch (Exception ignored) {
+        }
       }
     }
   }
