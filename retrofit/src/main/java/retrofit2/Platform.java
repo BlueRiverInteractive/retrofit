@@ -158,7 +158,9 @@ class Platform {
         try {
           Class<?> gdx = Class.forName("com.badlogic.gdx.Gdx");
           gdxApp = gdx.getDeclaredField("app").get(null);
-          postRunnable = gdxApp.getClass().getDeclaredMethod("postRunnable", Runnable.class);
+
+          Class<?> application = Class.forName("com.badlogic.gdx.Application");
+          postRunnable = application.getDeclaredMethod("postRunnable", Runnable.class);
         } catch (Exception e) {
           e.printStackTrace();
         }
