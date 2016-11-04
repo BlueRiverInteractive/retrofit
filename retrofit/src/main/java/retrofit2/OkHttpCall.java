@@ -25,68 +25,82 @@ import okio.ForwardingSource;
 import okio.Okio;
 
 final class OkHttpCall<T> implements Call<T> {
-  private final okhttp3.Call.Factory callFactory;
-  private final RequestFactory requestFactory;
+  private final ServiceMethod<T, ?> serviceMethod;
   private final Object[] args;
-  private final Converter<ResponseBody, T> responseConverter;
 
-  private volatile okhttp3.Call rawCall;
-  private boolean executed; // Guarded by this.
   private volatile boolean canceled;
 
-  OkHttpCall(okhttp3.Call.Factory callFactory, RequestFactory requestFactory, Object[] args,
-      Converter<ResponseBody, T> responseConverter) {
-    this.callFactory = callFactory;
-    this.requestFactory = requestFactory;
+  // All guarded by this.
+  private okhttp3.Call rawCall;
+  private Throwable creationFailure; // Either a RuntimeException or IOException.
+  private boolean executed;
+
+  OkHttpCall(ServiceMethod<T, ?> serviceMethod, Object[] args) {
+    this.serviceMethod = serviceMethod;
     this.args = args;
-    this.responseConverter = responseConverter;
   }
 
   @SuppressWarnings("CloneDoesntCallSuperClone") // We are a final type & this saves clearing state.
   @Override public OkHttpCall<T> clone() {
-    return new OkHttpCall<>(callFactory, requestFactory, args, responseConverter);
+    return new OkHttpCall<>(serviceMethod, args);
+  }
+
+  @Override public synchronized Request request() {
+    okhttp3.Call call = rawCall;
+    if (call != null) {
+      return call.request();
+    }
+    if (creationFailure != null) {
+      if (creationFailure instanceof IOException) {
+        throw new RuntimeException("Unable to create request.", creationFailure);
+      } else {
+        throw (RuntimeException) creationFailure;
+      }
+    }
+    try {
+      return (rawCall = createRawCall()).request();
+    } catch (RuntimeException e) {
+      creationFailure = e;
+      throw e;
+    } catch (IOException e) {
+      creationFailure = e;
+      throw new RuntimeException("Unable to create request.", e);
+    }
   }
 
   @Override public void enqueue(final Callback<T> callback) {
+    if (callback == null) throw new NullPointerException("callback == null");
+
+    okhttp3.Call call;
+    Throwable failure;
+
     synchronized (this) {
       if (executed) throw new IllegalStateException("Already executed.");
       executed = true;
+
+      call = rawCall;
+      failure = creationFailure;
+      if (call == null && failure == null) {
+        try {
+          call = rawCall = createRawCall();
+        } catch (Throwable t) {
+          failure = creationFailure = t;
+        }
+      }
     }
 
-    okhttp3.Call rawCall;
-    try {
-      rawCall = createRawCall();
-    } catch (Throwable t) {
-      callback.onFailure(t);
+    if (failure != null) {
+      callback.onFailure(this, failure);
       return;
     }
+
     if (canceled) {
-      rawCall.cancel();
+      call.cancel();
     }
-    this.rawCall = rawCall;
 
-    rawCall.enqueue(new okhttp3.Callback() {
-      private void callFailure(Throwable e) {
-        try {
-          callback.onFailure(e);
-        } catch (Throwable t) {
-          t.printStackTrace();
-        }
-      }
-
-      private void callSuccess(Response<T> response) {
-        try {
-          callback.onResponse(response);
-        } catch (Throwable t) {
-          t.printStackTrace();
-        }
-      }
-
-      @Override public void onFailure(Request request, IOException e) {
-        callFailure(e);
-      }
-
-      @Override public void onResponse(okhttp3.Response rawResponse) {
+    call.enqueue(new okhttp3.Callback() {
+      @Override public void onResponse(okhttp3.Call call, okhttp3.Response rawResponse)
+          throws IOException {
         Response<T> response;
         try {
           response = parseResponse(rawResponse);
@@ -96,6 +110,30 @@ final class OkHttpCall<T> implements Call<T> {
         }
         callSuccess(response);
       }
+
+      @Override public void onFailure(okhttp3.Call call, IOException e) {
+        try {
+          callback.onFailure(OkHttpCall.this, e);
+        } catch (Throwable t) {
+          t.printStackTrace();
+        }
+      }
+
+      private void callFailure(Throwable e) {
+        try {
+          callback.onFailure(OkHttpCall.this, e);
+        } catch (Throwable t) {
+          t.printStackTrace();
+        }
+      }
+
+      private void callSuccess(Response<T> response) {
+        try {
+          callback.onResponse(OkHttpCall.this, response);
+        } catch (Throwable t) {
+          t.printStackTrace();
+        }
+      }
     });
   }
 
@@ -104,22 +142,41 @@ final class OkHttpCall<T> implements Call<T> {
   }
 
   @Override public Response<T> execute() throws IOException {
+    okhttp3.Call call;
+
     synchronized (this) {
       if (executed) throw new IllegalStateException("Already executed.");
       executed = true;
+
+      if (creationFailure != null) {
+        if (creationFailure instanceof IOException) {
+          throw (IOException) creationFailure;
+        } else {
+          throw (RuntimeException) creationFailure;
+        }
+      }
+
+      call = rawCall;
+      if (call == null) {
+        try {
+          call = rawCall = createRawCall();
+        } catch (IOException | RuntimeException e) {
+          creationFailure = e;
+          throw e;
+        }
+      }
     }
 
-    okhttp3.Call rawCall = createRawCall();
     if (canceled) {
-      rawCall.cancel();
+      call.cancel();
     }
-    this.rawCall = rawCall;
 
-    return parseResponse(rawCall.execute());
+    return parseResponse(call.execute());
   }
 
   private okhttp3.Call createRawCall() throws IOException {
-    okhttp3.Call call = callFactory.newCall(requestFactory.create(args));
+    Request request = serviceMethod.toRequest(args);
+    okhttp3.Call call = serviceMethod.callFactory.newCall(request);
     if (call == null) {
       throw new NullPointerException("Call.Factory returned null.");
     }
@@ -146,12 +203,13 @@ final class OkHttpCall<T> implements Call<T> {
     }
 
     if (code == 204 || code == 205) {
+      rawBody.close();
       return Response.success(null, rawResponse);
     }
 
     ExceptionCatchingRequestBody catchingBody = new ExceptionCatchingRequestBody(rawBody);
     try {
-      T body = responseConverter.convert(catchingBody);
+      T body = serviceMethod.toResponse(catchingBody);
       return Response.success(body, rawResponse);
     } catch (RuntimeException e) {
       // If the underlying source threw an exception, propagate that rather than indicating it was
@@ -163,9 +221,13 @@ final class OkHttpCall<T> implements Call<T> {
 
   public void cancel() {
     canceled = true;
-    okhttp3.Call rawCall = this.rawCall;
-    if (rawCall != null) {
-      rawCall.cancel();
+
+    okhttp3.Call call;
+    synchronized (this) {
+      call = rawCall;
+    }
+    if (call != null) {
+      call.cancel();
     }
   }
 

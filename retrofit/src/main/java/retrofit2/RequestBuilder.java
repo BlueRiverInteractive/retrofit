@@ -29,7 +29,7 @@ import okio.BufferedSink;
 final class RequestBuilder {
   private static final char[] HEX_DIGITS =
       { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F' };
-  private static final String PATH_SEGMENT_ENCODE_SET = " \"<>^`{}|/\\?#";
+  private static final String PATH_SEGMENT_ALWAYS_ENCODE_SET = " \"<>^`{}|\\?#";
 
   private final String method;
 
@@ -68,13 +68,18 @@ final class RequestBuilder {
     }
   }
 
-  void setRelativeUrl(String relativeUrl) {
-    this.relativeUrl = relativeUrl;
+  void setRelativeUrl(Object relativeUrl) {
+    if (relativeUrl == null) throw new NullPointerException("@Url parameter is null.");
+    this.relativeUrl = relativeUrl.toString();
   }
 
   void addHeader(String name, String value) {
     if ("Content-Type".equalsIgnoreCase(name)) {
-      contentType = MediaType.parse(value);
+      MediaType type = MediaType.parse(value);
+      if (type == null) {
+        throw new IllegalArgumentException("Malformed content type: " + value);
+      }
+      contentType = type;
     } else {
       requestBuilder.addHeader(name, value);
     }
@@ -85,20 +90,20 @@ final class RequestBuilder {
       // The relative URL is cleared when the first query parameter is set.
       throw new AssertionError();
     }
-    relativeUrl = relativeUrl.replace("{" + name + "}", canonicalize(value, encoded));
+    relativeUrl = relativeUrl.replace("{" + name + "}", canonicalizeForPath(value, encoded));
   }
 
-  private static String canonicalize(String input, boolean alreadyEncoded) {
+  private static String canonicalizeForPath(String input, boolean alreadyEncoded) {
     int codePoint;
     for (int i = 0, limit = input.length(); i < limit; i += Character.charCount(codePoint)) {
       codePoint = input.codePointAt(i);
       if (codePoint < 0x20 || codePoint >= 0x7f
-          || PATH_SEGMENT_ENCODE_SET.indexOf(codePoint) != -1
-          || (codePoint == '%' && !alreadyEncoded)) {
+          || PATH_SEGMENT_ALWAYS_ENCODE_SET.indexOf(codePoint) != -1
+          || (!alreadyEncoded && (codePoint == '/' || codePoint == '%'))) {
         // Slow path: the character at i requires encoding!
         Buffer out = new Buffer();
         out.writeUtf8(input, 0, i);
-        canonicalize(out, input, i, limit, alreadyEncoded);
+        canonicalizeForPath(out, input, i, limit, alreadyEncoded);
         return out.readUtf8();
       }
     }
@@ -107,7 +112,7 @@ final class RequestBuilder {
     return input;
   }
 
-  private static void canonicalize(Buffer out, String input, int pos, int limit,
+  private static void canonicalizeForPath(Buffer out, String input, int pos, int limit,
       boolean alreadyEncoded) {
     Buffer utf8Buffer = null; // Lazily allocated.
     int codePoint;
@@ -116,10 +121,9 @@ final class RequestBuilder {
       if (alreadyEncoded
           && (codePoint == '\t' || codePoint == '\n' || codePoint == '\f' || codePoint == '\r')) {
         // Skip this character.
-      } else if (codePoint < 0x20
-          || codePoint >= 0x7f
-          || PATH_SEGMENT_ENCODE_SET.indexOf(codePoint) != -1
-          || (codePoint == '%' && !alreadyEncoded)) {
+      } else if (codePoint < 0x20 || codePoint >= 0x7f
+          || PATH_SEGMENT_ALWAYS_ENCODE_SET.indexOf(codePoint) != -1
+          || (!alreadyEncoded && (codePoint == '/' || codePoint == '%'))) {
         // Percent encode this character.
         if (utf8Buffer == null) {
           utf8Buffer = new Buffer();
@@ -142,6 +146,10 @@ final class RequestBuilder {
     if (relativeUrl != null) {
       // Do a one-time combination of the built relative URL and the base URL.
       urlBuilder = baseUrl.newBuilder(relativeUrl);
+      if (urlBuilder == null) {
+        throw new IllegalArgumentException(
+            "Malformed URL. Base: " + baseUrl + ", Relative: " + relativeUrl);
+      }
       relativeUrl = null;
     }
 
@@ -164,6 +172,10 @@ final class RequestBuilder {
     multipartBuilder.addPart(headers, body);
   }
 
+  void addPart(MultipartBody.Part part) {
+    multipartBuilder.addPart(part);
+  }
+
   void setBody(RequestBody body) {
     this.body = body;
   }
@@ -176,6 +188,10 @@ final class RequestBuilder {
     } else {
       // No query parameters triggered builder creation, just combine the relative URL and base URL.
       url = baseUrl.resolve(relativeUrl);
+      if (url == null) {
+        throw new IllegalArgumentException(
+            "Malformed URL. Base: " + baseUrl + ", Relative: " + relativeUrl);
+      }
     }
 
     RequestBody body = this.body;

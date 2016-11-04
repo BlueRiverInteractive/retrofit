@@ -18,7 +18,8 @@ package retrofit2;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
-import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodHandles.Lookup;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.concurrent.Executor;
@@ -57,11 +58,15 @@ class Platform {
     return new Platform();
   }
 
+  Executor defaultCallbackExecutor() {
+    return null;
+  }
+
   CallAdapter.Factory defaultCallAdapterFactory(Executor callbackExecutor) {
     if (callbackExecutor != null) {
       return new ExecutorCallAdapterFactory(callbackExecutor);
     }
-    return DefaultCallAdapter.FACTORY;
+    return DefaultCallAdapterFactory.INSTANCE;
   }
 
   boolean isDefaultMethod(Method method) {
@@ -81,8 +86,11 @@ class Platform {
 
     @Override Object invokeDefaultMethod(Method method, Class<?> declaringClass, Object object,
         Object... args) throws Throwable {
-      return MethodHandles.lookup()
-          .in(declaringClass)
+      // Because the service interface might not be public, we need to use a MethodHandle lookup
+      // that ignores the visibility of the declaringClass.
+      Constructor<Lookup> constructor = Lookup.class.getDeclaredConstructor(Class.class, int.class);
+      constructor.setAccessible(true);
+      return constructor.newInstance(declaringClass, -1 /* trusted */)
           .unreflectSpecial(method, declaringClass)
           .bindTo(object)
           .invokeWithArguments(args);
@@ -90,10 +98,11 @@ class Platform {
   }
 
   static class Android extends Platform {
+    @Override public Executor defaultCallbackExecutor() {
+      return new MainThreadExecutor();
+    }
+
     @Override CallAdapter.Factory defaultCallAdapterFactory(Executor callbackExecutor) {
-      if (callbackExecutor == null) {
-        callbackExecutor = new MainThreadExecutor();
-      }
       return new ExecutorCallAdapterFactory(callbackExecutor);
     }
 
@@ -107,10 +116,11 @@ class Platform {
   }
 
   static class IOS extends Platform {
+    @Override public Executor defaultCallbackExecutor() {
+      return new MainThreadExecutor();
+    }
+
     @Override CallAdapter.Factory defaultCallAdapterFactory(Executor callbackExecutor) {
-      if (callbackExecutor == null) {
-        callbackExecutor = new MainThreadExecutor();
-      }
       return new ExecutorCallAdapterFactory(callbackExecutor);
     }
 
@@ -136,17 +146,24 @@ class Platform {
         } catch (IllegalArgumentException | IllegalAccessException e) {
           throw new AssertionError(e);
         } catch (InvocationTargetException e) {
-          throw new RuntimeException(e.getCause());
+          Throwable cause = e.getCause();
+          if (cause instanceof RuntimeException) {
+            throw (RuntimeException) cause;
+          } else if (cause instanceof Error) {
+            throw (Error) cause;
+          }
+          throw new RuntimeException(cause);
         }
       }
     }
   }
 
   static class LibGDX extends Platform {
+    @Override public Executor defaultCallbackExecutor() {
+      return new MainThreadExecutor();
+    }
+
     @Override CallAdapter.Factory defaultCallAdapterFactory(Executor callbackExecutor) {
-      if (callbackExecutor == null) {
-        callbackExecutor = new MainThreadExecutor();
-      }
       return new ExecutorCallAdapterFactory(callbackExecutor);
     }
 
